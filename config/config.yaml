@@ -1,0 +1,30 @@
+defaults:
+  - model: Swin-T
+  - _self_
+
+trainer:
+  num_epochs: 300
+  warmup_steps: 20
+
+model:
+  M: 1  # Window size (root of patches in each window) TODO: Set to 7
+  nH: 4  # Number of attention heads
+  p_drop: 0.2  # MLP dropout probability
+
+# criterion:
+#   null
+
+optimizer:
+  lr: 1e-3
+  weight_decay: 0.05
+
+data:
+  train:
+    batch_size: 1024
+    shuffle: true
+    persistent_workers: true
+    num_workers: 2
+    pin_memory: true
+    
+  eval:
+    batch_size: 1024

@@ -1,0 +1,7 @@
+torch==2.9.0
+tensorboard~=2.19.0
+einops
+hydra-core
+torchmetrics
+torchvision
+tqdm
