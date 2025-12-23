@@ -11,7 +11,9 @@ class DeviceDataLoader:
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         for x, y in self.dataloader:
-            yield x.to(self.device, non_blocking=True), y.to(self.device, non_blocking=True)
+            yield x.to(self.device, non_blocking=True), y.to(
+                self.device, non_blocking=True
+            )
 
     def __len__(self) -> int:
         return len(self.dataloader)

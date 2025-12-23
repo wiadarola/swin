@@ -37,7 +37,9 @@ def reset_metrics(metrics: dict[str, torchmetrics.Metric]):
         metric.reset()
 
 
-def update_metrics(metrics: dict[str, torchmetrics.Metric], y: torch.Tensor, y_hat: torch.Tensor):
+def update_metrics(
+    metrics: dict[str, torchmetrics.Metric], y: torch.Tensor, y_hat: torch.Tensor
+):
     """Update the state variables of the metrics"""
     for metric in metrics.values():
         metric.update(y_hat, y)
@@ -122,7 +124,9 @@ def main(cfg: DictConfig):
     num_epochs = cfg.trainer.num_epochs
     warmup_steps = cfg.trainer.warmup_steps
     lr_warmup = torch.optim.lr_scheduler.LinearLR(optimizer, total_iters=warmup_steps)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, num_epochs - warmup_steps)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, num_epochs - warmup_steps
+    )
 
     train_loader, val_loader = load_loaders(**cfg.data, device=device)
 
@@ -135,7 +139,7 @@ def main(cfg: DictConfig):
         if epoch > warmup_steps:
             scheduler.step()
 
-        writer.add_scalar("Learning Rate", scheduler.get_lr()[0], epoch)
+        writer.add_scalar("Learning Rate", scheduler.get_last_lr()[0], epoch)
 
         eval(model, criterion, val_loader, avg_loss, metrics)
         val_loss = avg_loss.compute()
