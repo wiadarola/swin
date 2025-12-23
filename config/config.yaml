@@ -20,11 +20,11 @@ optimizer:
 
 data:
   train:
-    batch_size: 1024
+    batch_size: 4096 
     shuffle: true
     persistent_workers: true
     num_workers: 2
     pin_memory: true
     
-  eval:
-    batch_size: 1024
+  valid:
+    batch_size: 4096 

@@ -8,6 +8,7 @@ import torchvision.transforms.v2 as T
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 from torch import nn
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.datasets import CIFAR10
@@ -18,7 +19,7 @@ from src.model import SwinTransformer
 
 
 def load_loaders(
-    train: dict[str, Any], eval: dict[str, Any], device: torch.device
+    train: dict[str, Any], valid: dict[str, Any], device: torch.device
 ) -> tuple[DeviceDataLoader, DeviceDataLoader]:
     toTensor = T.Compose((T.ToImage(), T.ToDtype(torch.float, scale=True)))
 
@@ -26,7 +27,7 @@ def load_loaders(
     val_set = CIFAR10("data/", train=False, transform=toTensor, download=True)
 
     train_loader = DeviceDataLoader(DataLoader(train_set, **train), device)
-    val_loader = DeviceDataLoader(DataLoader(val_set, **eval), device)
+    val_loader = DeviceDataLoader(DataLoader(val_set, **valid), device)
 
     return train_loader, val_loader
 
@@ -79,7 +80,7 @@ def train(
         update_metrics(metrics, y, y_hat)
 
 
-def eval(
+def validate(
     model: nn.Module,
     criterion: nn.Module,
     dataloader: DeviceDataLoader,
@@ -116,32 +117,33 @@ def main(cfg: DictConfig):
     logging.info(f"Computing metrics: {", ".join(metrics.keys())}")
 
     model = SwinTransformer(**cfg.model, n_classes=10).to(device)
-    logging.info(f"Using model: {HydraConfig.get().runtime.choices.get("model")}")
+    logging.info(f"Using model: {HydraConfig.get().runtime.choices.get('model')}")
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), **cfg.optimizer)
 
     num_epochs = cfg.trainer.num_epochs
     warmup_steps = cfg.trainer.warmup_steps
-    lr_warmup = torch.optim.lr_scheduler.LinearLR(optimizer, total_iters=warmup_steps)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, num_epochs - warmup_steps
+    warmup_scheduler = LinearLR(optimizer, total_iters=warmup_steps)
+    ca_scheduler = CosineAnnealingLR(optimizer, num_epochs - warmup_steps)
+    lr_scheduler = SequentialLR(
+        optimizer,
+        schedulers=(warmup_scheduler, ca_scheduler),
+        milestones=[warmup_steps],
     )
 
     train_loader, val_loader = load_loaders(**cfg.data, device=device)
 
     logging.info(f"Training begun. Running for {num_epochs} epochs.")
     for epoch in tqdm(range(num_epochs), "Epoch"):
-        lr_warmup.step()
         train(model, criterion, optimizer, train_loader, avg_loss, metrics)
         writer.add_scalar(f"loss/train", avg_loss.compute(), epoch)
         write_metrics(writer, metrics, epoch, stage="train")
-        if epoch > warmup_steps:
-            scheduler.step()
+        lr_scheduler.step()
 
-        writer.add_scalar("Learning Rate", scheduler.get_last_lr()[0], epoch)
+        writer.add_scalar("Learning Rate", lr_scheduler.get_last_lr()[0], epoch)
 
-        eval(model, criterion, val_loader, avg_loss, metrics)
+        validate(model, criterion, val_loader, avg_loss, metrics)
         val_loss = avg_loss.compute()
         writer.add_scalar("loss/val", val_loss, epoch)
         write_metrics(writer, metrics, epoch, stage="val")
