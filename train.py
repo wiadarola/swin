@@ -1,5 +1,4 @@
 import logging
-from typing import Any, Literal
 
 import hydra
 import torch
@@ -14,90 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision.datasets import CIFAR10
 from tqdm.auto import tqdm
 
-from src.loader import DeviceDataLoader
 from src.model import SwinTransformer
-
-
-def load_loaders(
-    train: dict[str, Any], valid: dict[str, Any], device: torch.device
-) -> tuple[DeviceDataLoader, DeviceDataLoader]:
-    toTensor = T.Compose((T.ToImage(), T.ToDtype(torch.float, scale=True)))
-
-    train_set = CIFAR10("data/", transform=toTensor, download=True)
-    val_set = CIFAR10("data/", train=False, transform=toTensor, download=True)
-
-    train_loader = DeviceDataLoader(DataLoader(train_set, **train), device)
-    val_loader = DeviceDataLoader(DataLoader(val_set, **valid), device)
-
-    return train_loader, val_loader
-
-
-def reset_metrics(metrics: dict[str, torchmetrics.Metric]):
-    """Reset metric state variables to their default values"""
-    for metric in metrics.values():
-        metric.reset()
-
-
-def update_metrics(
-    metrics: dict[str, torchmetrics.Metric], y: torch.Tensor, y_hat: torch.Tensor
-):
-    """Update the state variables of the metrics"""
-    for metric in metrics.values():
-        metric.update(y_hat, y)
-
-
-def write_metrics(
-    writer: SummaryWriter,
-    metrics: dict[str, torchmetrics.Metric],
-    epoch: int,
-    stage: Literal["train", "val"],
-):
-    """Compute the final metric values and add to the writer summary"""
-    for metric_name, metric in metrics.items():
-        writer.add_scalar(f"{metric_name}/{stage}", metric.compute(), epoch)
-
-
-def train(
-    model: nn.Module,
-    criterion: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    dataloader: DeviceDataLoader,
-    avg_loss: torchmetrics.MeanMetric,
-    metrics: dict[str, torchmetrics.Metric],
-):
-    avg_loss.reset()
-    reset_metrics(metrics)
-
-    model.train()
-    for x, y in tqdm(dataloader, "Training", leave=False):
-        y_hat = model(x)
-        loss: torch.Tensor = criterion(y_hat, y)
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-
-        avg_loss.update(loss)
-        update_metrics(metrics, y, y_hat)
-
-
-def validate(
-    model: nn.Module,
-    criterion: nn.Module,
-    dataloader: DeviceDataLoader,
-    avg_loss: torchmetrics.MeanMetric,
-    metrics: dict[str, torchmetrics.Metric],
-):
-    avg_loss.reset()
-    reset_metrics(metrics)
-
-    model.eval()
-    with torch.no_grad():
-        for x, y in tqdm(dataloader, "Validating", leave=False):
-            y_hat = model(x)
-            loss = criterion(y_hat, y)
-
-            avg_loss.update(loss)
-            update_metrics(metrics, y, y_hat)
 
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
@@ -108,52 +24,96 @@ def main(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info(f"Using device: {device}")
 
-    best_val_loss = torch.inf
-    avg_loss = torchmetrics.MeanMetric().to(device)
-    metrics = {
-        "F1 Score": torchmetrics.F1Score(task="multiclass", num_classes=10).to(device),
-        "Accuracy": torchmetrics.Accuracy(task="multiclass", num_classes=10).to(device),
-    }
-    logging.info(f"Computing metrics: {", ".join(metrics.keys())}")
+    metrics = torchmetrics.MetricCollection(
+        {
+            "f1": torchmetrics.F1Score(task="multiclass", num_classes=10),
+            "accuracy": torchmetrics.Accuracy(task="multiclass", num_classes=10),
+        }
+    ).to(device)
+
+    train_loss = torchmetrics.MeanMetric().to(device)
+    valid_loss = torchmetrics.MeanMetric().to(device)
+
+    train_metrics = metrics.clone(postfix="train/")
+    valid_metrics = metrics.clone(postfix="valid/")
+
+    logging.info(f"Computing metrics: {[metric for metric in metrics]}")
+
+    best_valid_loss = torch.inf
 
     model = SwinTransformer(**cfg.model, n_classes=10).to(device)
-    logging.info(f"Using model: {HydraConfig.get().runtime.choices.get('model')}")
-
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), **cfg.optimizer)
 
+    logging.info(f"Using model: {HydraConfig.get().runtime.choices.get('model')}")
+
     num_epochs = cfg.trainer.num_epochs
     warmup_steps = cfg.trainer.warmup_steps
-    warmup_scheduler = LinearLR(optimizer, total_iters=warmup_steps)
-    ca_scheduler = CosineAnnealingLR(optimizer, num_epochs - warmup_steps)
-    lr_scheduler = SequentialLR(
-        optimizer,
-        schedulers=(warmup_scheduler, ca_scheduler),
-        milestones=[warmup_steps],
-    )
+    schedulers = [
+        LinearLR(optimizer, total_iters=warmup_steps),
+        CosineAnnealingLR(optimizer, num_epochs - warmup_steps),
+    ]
+    lr_scheduler = SequentialLR(optimizer, schedulers, [warmup_steps])
 
-    train_loader, val_loader = load_loaders(**cfg.data, device=device)
+    toTensor = T.Compose((T.ToImage(), T.ToDtype(torch.float, scale=True)))
+    train_set = CIFAR10("data/", transform=toTensor, download=True)
+    valid_set = CIFAR10("data/", train=False, transform=toTensor, download=True)
+    train_loader = DataLoader(train_set, **cfg.data.train)
+    valid_loader = DataLoader(valid_set, **cfg.data.valid)
 
     logging.info(f"Training begun. Running for {num_epochs} epochs.")
     for epoch in tqdm(range(num_epochs), "Epoch"):
-        train(model, criterion, optimizer, train_loader, avg_loss, metrics)
-        writer.add_scalar(f"loss/train", avg_loss.compute(), epoch)
-        write_metrics(writer, metrics, epoch, stage="train")
-        lr_scheduler.step()
+        model.train()
+        for x, y in tqdm(train_loader, "Training", leave=False):
+            x = x.to(device)
+            y = y.to(device)
 
-        writer.add_scalar("Learning Rate", lr_scheduler.get_last_lr()[0], epoch)
+            y_hat = model(x)
+            loss: torch.Tensor = criterion(y_hat, y)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
 
-        validate(model, criterion, val_loader, avg_loss, metrics)
-        val_loss = avg_loss.compute()
-        writer.add_scalar("loss/val", val_loss, epoch)
-        write_metrics(writer, metrics, epoch, stage="val")
+            train_loss.update(loss)
+            train_metrics.update(y_hat, y)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), f"{log_dir}/model_state_best_val.pt")
+            lr_scheduler.step()  # Step on batch
 
+        model.eval()
+        with torch.no_grad():
+            for x, y in tqdm(valid_loader, "Validating", leave=False):
+                x = x.to(device)
+                y = y.to(device)
+
+                y_hat = model(x)
+                loss = criterion(y_hat, y)
+
+                valid_loss.update(loss)
+                valid_metrics.update(y_hat, y)
+
+        # --- Metric handling ---
+        writer.add_scalar("lr", lr_scheduler.get_last_lr()[0], epoch)
+
+        valid_loss_epoch = valid_loss.compute()
+        writer.add_scalars("loss", {"train": train_loss.compute(), "valid": valid_loss_epoch})
+
+        for metric_name, metric_value in valid_metrics.compute():
+            writer.add_scalar(metric_name, metric_value, epoch)
+
+        for metric_name, metric_value in train_metrics.compute():
+            writer.add_scalar(metric_name, metric_value, epoch)
+
+        if valid_loss_epoch < best_valid_loss:
+            best_valid_loss = valid_loss_epoch
+            torch.save(model.state_dict(), f"{log_dir}/model_state_best_loss.pt")
+
+        train_loss.reset()
+        valid_loss.reset()
+        train_metrics.reset()
+        valid_metrics.reset()
+
+    logging.info(f"Training ended. Best validation loss: {best_valid_loss}")
     torch.save(model.state_dict(), f"{log_dir}/model_state_last.pt")
-    logging.info(f"Training ended. Best validation loss: {best_val_loss}")
     writer.close()
 
 
