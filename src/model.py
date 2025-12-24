@@ -64,9 +64,7 @@ class SwinTransformerStage(nn.Module):
         super().__init__()
         assert depth % 2 == 0, "Depth must be a multiple of two"
         self.conv = nn.Conv2d(in_embed, out_embed, d_window, d_window)
-        BlockPair = functools.partial(
-            SwinTransformerBlockPair, out_embed, M, nH, p_drop
-        )
+        BlockPair = functools.partial(SwinTransformerBlockPair, out_embed, M, nH, p_drop)
         self.blocks = nn.Sequential(*[BlockPair() for _ in range(depth // 2)])
 
     def forward(self, x: torch.Tensor):
@@ -138,15 +136,11 @@ class WMSA(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         _, c, h, w = x.shape
-        assert (
-            h % self.M == 0 and w % self.M == 0
-        ), "Patches must be divisible by window size"
+        assert h % self.M == 0 and w % self.M == 0, "Patches must be divisible by window size"
         windows = self.partition(x)
         windows = rearrange(windows, "B (C MM) nW -> B nW MM C", C=c)
         QKV = self.qkv(windows)
-        Q, K, V = rearrange(
-            QKV, "B nW MM (nH T H) -> T B nW nH MM H", T=3, nH=self.nH
-        ).unbind()
+        Q, K, V = rearrange(QKV, "B nW MM (nH T H) -> T B nW nH MM H", T=3, nH=self.nH).unbind()
         mask = self.get_mask(x.shape).to(x.device)  # nW 1 MM MM
         attn = ((Q @ K.transpose(-1, -2)) / self.d + self.bias + mask).softmax(-1) @ V
         stack = rearrange(attn, "B nW nH MM H -> B nW MM (nH H)")
