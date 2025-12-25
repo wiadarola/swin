@@ -8,9 +8,11 @@ trainer:
   patience: 5
 
 model:
-  M: 8  # Window size (root of patches in each window)
-  nH: 4  # Number of attention heads
-  p_drop: 0.2  # MLP dropout probability
+  patch_size: 4
+  num_heads: [3, 6, 12, 24]  # Number of attention heads
+  window_size: 8  # Window size (root of patches in each window)
+  dropout: 0.2  # MLP dropout probability
+  num_classes: 100
 
 optimizer:
   lr: 1e-3
@@ -21,14 +23,14 @@ criterion:
 
 data:
   train:
-    batch_size: 128 
+    batch_size: 32 
     shuffle: true
     persistent_workers: true
     num_workers: 4
     pin_memory: true
     
   valid:
-    batch_size: 128 
+    batch_size: 32 
     persistent_workers: true
     num_workers: 4
     pin_memory: true

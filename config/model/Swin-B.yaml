@@ -1,2 +1,2 @@
-d_embed: 128
+embed_dim: 128
 depths: [2, 2, 18, 2]
