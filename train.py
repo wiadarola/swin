@@ -28,8 +28,8 @@ def main(cfg: DictConfig):
 
     metrics = torchmetrics.MetricCollection(
         {
-            "f1": torchmetrics.F1Score(task="multiclass", num_classes=100),
-            "accuracy": torchmetrics.Accuracy(task="multiclass", num_classes=100),
+            "f1": torchmetrics.F1Score(task="multiclass", num_classes=cfg.model.num_classes),
+            "accuracy": torchmetrics.Accuracy(task="multiclass", num_classes=cfg.model.num_classes),
         }
     ).to(device)
 
@@ -44,7 +44,7 @@ def main(cfg: DictConfig):
     epochs_without_improvement = 0
     best_valid_loss = torch.inf
 
-    model = SwinTransformer(**cfg.model, n_classes=100).to(device)
+    model = SwinTransformer(**cfg.model).to(device)
     model.compile(fullgraph=True)
 
     criterion = nn.CrossEntropyLoss(**cfg.criterion)
@@ -65,6 +65,7 @@ def main(cfg: DictConfig):
     valid_set = CIFAR100("data/", train=False, transform=toTensor, download=True)
     train_loader = DataLoader(train_set, **cfg.data.train)
     valid_loader = DataLoader(valid_set, **cfg.data.valid)
+    logging.info(f"Using {len(train_set)} training and {len(valid_set)} validation samples")
 
     logging.info(f"Training begun. Running for {num_epochs} epochs.")
     for epoch in tqdm(range(num_epochs), "Epoch"):
