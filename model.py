@@ -2,37 +2,40 @@ import functools
 import math
 
 import torch
-from torch import nn
 from einops import rearrange
+from torch import nn
 
 
 class SwinTransformer(nn.Module):
     def __init__(
         self,
-        d_embed: int,
+        patch_size: int,
+        embed_dim: int,
         depths: tuple[int, int, int, int],
-        M: int,
-        nH: int,
-        p_drop: float,
-        n_classes: int,
+        window_size: int,
+        num_heads: list[int],
+        dropout: float,
+        num_classes: int,
     ):
-        """_summary_
+        """Creates a SwinTransformer class
 
-        :param d_embed: Arbitrary projection dimension (denoted as C in the paper)
+        :param patch_size: Patch partition size
+        :param embed_dim: Projection dimension (denoted as C in the paper)
         :param depths: Number of blocks in each of the four stages
-        :param M: Patch size
-        :param nH: Number of attention heads
-        :param p_drop: _description_
+        :param window_size: Attention patch size
+        :param num_heads: Number of attention heads
+        :param dropout: Dropout probability for the attention MLP
+        :param num_classes: Output dimension of the model
         """
         super().__init__()
-        Stage = functools.partial(SwinTransformerStage, M=M, nH=nH, p_drop=p_drop)
-        self.stage1 = Stage(3, d_embed, 4, depths[0])
-        self.stage2 = Stage(d_embed, 2 * d_embed, 2, depths[1])
-        self.stage3 = Stage(d_embed * 2, d_embed * 4, 2, depths[2])
-        self.stage4 = Stage(d_embed * 4, d_embed * 8, 2, depths[3])
-        self.ln = nn.LayerNorm(d_embed * 8)
+        Stage = functools.partial(SwinTransformerStage, M=window_size, p_drop=dropout)
+        self.stage1 = Stage(3, embed_dim, patch_size, depths[0], num_heads[0])
+        self.stage2 = Stage(embed_dim, 2 * embed_dim, 2, depths[1], num_heads[1])
+        self.stage3 = Stage(embed_dim * 2, embed_dim * 4, 2, depths[2], num_heads[2])
+        self.stage4 = Stage(embed_dim * 4, embed_dim * 8, 2, depths[3], num_heads[3])
+        self.ln = nn.LayerNorm(embed_dim * 8)
         self.pool = nn.AdaptiveAvgPool2d(1)
-        self.head = nn.Linear(d_embed * 8, n_classes)
+        self.head = nn.Linear(embed_dim * 8, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stage1(x)  # 'linear embedding' -> blocks
@@ -40,9 +43,9 @@ class SwinTransformer(nn.Module):
         x = self.stage3(x)
         x = self.stage4(x)
 
-        x = x.permute(0, 2, 3, 1)  # B H W C
+        x = rearrange(x, "B C H W -> B H W C")
         x = self.ln(x)
-        x = x.permute(0, 3, 1, 2)  # B C H W
+        x = rearrange(x, "B H W C -> B C H W")
         x = self.pool(x).flatten(1)
         x = self.head(x)
 
@@ -94,17 +97,17 @@ class SwinTransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         skip1 = x
-        x = x.permute(0, 2, 3, 1)  # B H W C
+        x = rearrange(x, "B C H W -> B H W C")
         x = self.ln1(x)
-        x = x.permute(0, 3, 1, 2)  # B C H W
+        x = rearrange(x, "B H W C -> B C H W")
         x = self.msa(x)
         x = x + skip1
 
         skip2 = x
-        x = x.permute(0, 2, 3, 1)  # B H W C
+        x = rearrange(x, "B C H W -> B H W C")
         x = self.ln2(x)
         x = self.mlp(x)
-        x = x.permute(0, 3, 1, 2)  # B C H W
+        x = rearrange(x, "B H W C -> B C H W")
         x = x + skip2
 
         return x
@@ -124,6 +127,7 @@ class WMSA(nn.Module):
         self.cached_mask = torch.empty(0)
 
     def get_mask(self, shape: torch.Size) -> torch.Tensor:
+        """Returns an identity attention mask"""
         if self.cached_input_shape == shape:
             return self.cached_mask
 
@@ -156,6 +160,7 @@ class SWMSA(WMSA):
         super().__init__(d_embed, M, nH)
 
     def get_mask(self, shape: torch.Size) -> torch.Tensor:
+        """Returns a mask to disable shifted pixels that shouldn't attend to each other"""
         if self.cached_input_shape == shape:
             return self.cached_mask
 
